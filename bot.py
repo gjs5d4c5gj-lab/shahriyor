@@ -1,114 +1,112 @@
 import os
+import re
 import asyncio
-import logging
-import docx
-import io
-from aiogram import Bot, Dispatcher, types
-from aiogram.filters import Command
+from aiogram import Bot, Dispatcher, F
+from aiogram.types import Message
+import pypdf
 
-# Server maxfiy qutisidan (Variables) tokenni oladi
-BOT_TOKEN = os.getenv("BOT_TOKEN")
+# 1. Botni sozlash (Tokenni kompyuter/server muhitidan oladi)
+TOKEN = os.getenv("BOT_TOKEN")
 
-logging.basicConfig(level=logging.INFO)
+if not TOKEN:
+    raise ValueError("❌ XATOLIK: BOT_TOKEN topilmadi! Iltimos, ekotizim o'zgaruvchisini (Environment Variable) sozlang.")
 
-bot = Bot(token=BOT_TOKEN)
+bot = Bot(token=TOKEN)
 dp = Dispatcher()
 
-# Savollarni quiz formatiga o'tkazuvchi asosiy funksiya
-async def process_quiz_text(message: types.Message, text: str):
-    try:
-        # Savollarni '===' belgisi orqali ajratamiz
-        savollar = text.strip().split("===")
-        quiz_set = []
 
-        for s in savollar:
-            lines = [line.strip() for line in s.strip().split("\n") if line.strip()]
-            if len(lines) < 2:
-                continue
+# 2. PDF fayldan matnni ajratish va testlarni 30 tadan bo'lish funksiyasi
+def process_pdf_to_chunks(pdf_path, chunk_size=30):
+    reader = pypdf.PdfReader(pdf_path)
+    full_text = ""
+    
+    # PDF sahifalarini ketma-ket matnga aylantiramiz
+    for page in reader.pages:
+        text = page.extract_text()
+        if text:
+            full_text += text + "\n"
+            
+    # Savollarni '===' belgisi bo'yicha bo'laklarga ajratamiz
+    raw_questions = full_text.split("===")
+    cleaned_questions = []
+    
+    for q in raw_questions:
+        q_str = q.strip()
+        if not q_str:
+            continue
+            
+        # [AQLLI FILTR]: Savol boshidagi eski chalkash raqamlarni o'chirish
+        # Masalan: "115. Bank nima?" bo'lsa, raqamni o'chirib faqat "Bank nima?" qismini qoldiradi
+        q_str = re.sub(r'^\d+\.\s*', '', q_str)
+        cleaned_questions.append(q_str)
+        
+    # Savollarni 30 tadan qilib guruhlarga (bloklarga) bo'lib chiqadi
+    chunks = [cleaned_questions[i:i + chunk_size] for i in range(0, len(cleaned_questions), chunk_size)]
+    return chunks
 
-            question_text = lines[0]
-            options = []
-            correct_option_id = 0
 
-            for idx, line in enumerate(lines[1:]):
-                if line.startswith("*"):
-                    correct_option_id = idx
-                    options.append(line.replace("*", "").strip())
-                else:
-                    options.append(line)
-
-            if options:
-                quiz_set.append({
-                    'question': question_text,
-                    'options': options,
-                    'correct_option_id': correct_option_id
-                })
-
-        if not quiz_set:
-            await message.answer("❌ Fayl ichida testlar topilmadi yoki formati noto'g'ri.")
-            return
-
-        # Testlarni Telegram Quiz formatida ketma-ket yuborish
-        for q_num, q in enumerate(quiz_set, 1):
-            await bot.send_poll(
-                chat_id=message.chat.id,
-                question=f"{q_num}. {q['question']}",
-                options=q['options'],
-                type="quiz",
-                correct_option_id=q['correct_option_id'],
-                is_anonymous=False
-            )
-            # Telegram bloklab qo'ymasligi uchun 2 soniya kutadi
-            await asyncio.sleep(2)
-
-        await message.answer("🎉 Hamma testlar yuborildi! Omad tilayman!")
-
-    except Exception as e:
-        logging.error(f"Xatolik: {e}")
-        await message.answer("❌ Testlarni qayta ishlashda xatolik yuz berdi.")
-
-# /start buyrug'i kelganda
-@dp.message(Command("start"))
-async def cmd_start(message: types.Message):
+# 3. /start buyrug'ini tutib olish xendleri
+@dp.message(F.text == "/start")
+async def cmd_start(message: Message):
     await message.answer(
-        "👋 Assalomu alaykum!\n\nMenga ichida to'g'ri javoblari `*` bilan belgilangan `.txt` yoki `.docx` (Word) faylini tashlang. "
-        "Men sizga savollarni **Telegram Quiz (so'rovnoma)** shaklida ketma-ket chiqarib beraman."
+        "👋 Salom! Men testlarni 30 tadan variantlarga ajratib beruvchi aqlli botman.\n\n"
+        "📄 Menga testlar yozilgan **PDF faylni** yuboring, men ularni avtomat tozalab, "
+        "har bir variantni 1 dan 30 gacha qayta raqamlab beraman!"
     )
 
-# Oddiy matn ko'rinishida test tashlanganda
-@dp.message(lambda message: message.text is not None)
-async def handle_text_message(message: types.Message):
-    await process_quiz_text(message, message.text)
 
-# Fayl (.txt yoki .docx) ko'rinishida test tashlanganda
-@dp.message(lambda message: message.document is not None)
-async def handle_document_message(message: types.Message):
-    document = message.document
-    file_id = document.file_id
-    file = await bot.get_file(file_id)
-    file_path = file.file_path
-    downloaded_file = await bot.download_file(file_path)
+# 4. Botga PDF fayl kelganda uni qayta ishlash xendleri
+@dp.message(F.document)
+async def handle_pdf_document(message: Message):
+    # Faqat PDF fayllarni qabul qilamiz
+    if not message.document.file_name.endswith('.pdf'):
+        await message.answer("Iltimos, faqat PDF formatidagi fayl yuboring! 📄")
+        return
+        
+    waiting_msg = await message.answer("Fayl qabul qilindi. PDF ichidagi testlar qayta ishlanmoqda... ⏳")
     
-    # Agar Word (.docx) fayl bo'lsa
-    if document.file_name.endswith('.docx'):
-        doc = docx.Document(io.BytesIO(downloaded_file.read()))
-        full_text = []
-        for para in doc.paragraphs:
-            full_text.append(para.text)
-        text = "\n".join(full_text)
-        await process_quiz_text(message, text)
+    # PDF faylni bot serveriga yuklab olish
+    file_id = message.document.file_id
+    file = await bot.get_file(file_id)
+    
+    # Vaqtinchalik fayl nomi
+    local_pdf_name = f"temp_{message.from_user.id}.pdf"
+    await bot.download_file(file.file_path, local_pdf_name)
+    
+    try:
+        # PDF ni funksiyaga yuborib, 30 talik bloklarni olamiz
+        variant_chunks = process_pdf_to_chunks(local_pdf_name, chunk_size=30)
         
-    # Agar oddiy (.txt) fayl bo'lsa
-    elif document.file_name.endswith('.txt'):
-        text = downloaded_file.read().decode('utf-8')
-        await process_quiz_text(message, text)
+        # Har bir blokni alohida chiroyli xabar qilib chiqaramiz
+        for index, chunk in enumerate(variant_chunks, start=1):
+            chunk_text = f"📦 **{index}-VARIANT (Blok)**\n\n"
+            
+            # Savollarni har bir blok ichida 1 dan boshlab qayta chiroyli raqamlaymiz
+            for q_index, question in enumerate(chunk, start=1):
+                chunk_text += f"{q_index}. {question}\n===\n"
+                
+            # Oxiridagi ortiqcha === belgisini tozalaymiz
+            chunk_text = chunk_text.rstrip("\n===")
+            
+            # Foydalanuvchiga tayyor variant matnini yuborish
+            await message.answer(chunk_text)
+            
+        await waiting_msg.delete()
+        await message.answer("✅ Hamma testlar muvaffaqiyatli 30 tadan bloklarga ajratildi!")
         
-    else:
-        await message.answer("❌ Iltimos, testlarni faqat .txt yoki .docx formatida yuboring.")
+    except Exception as e:
+        await message.answer(f"❌ Faylni o'qishda xatolik yuz berdi: {e}")
+        
+    finally:
+        # Serverda ortiqcha joy egallamasligi uchun vaqtinchalik PDFni o'chiramiz
+        if os.path.exists(local_pdf_name):
+            os.remove(local_pdf_name)
 
-# Botni yondirish (Asosiy qism)
+
+# 5. Botni ishga tushirish (Main funksiya)
 async def main():
+    print("Bot muvaffaqiyatli ishga tushdi... 🚀")
     await dp.start_polling(bot)
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     asyncio.run(main())
