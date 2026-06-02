@@ -1,192 +1,131 @@
-import logging
 import os
-import re
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import (
-    Application,
-    CommandHandler,
-    MessageHandler,
-    CallbackQueryHandler,
-    ContextTypes,
-    filters,
-)
-from docx import Document
+import logging
+import asyncio
+from aiogram import Bot, Dispatcher, types, F
+from aiogram.filters import CommandStart
 
-logging.basicConfig(
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    level=logging.INFO
-)
-logger = logging.getLogger(__name__)
+# Bot tokeningizni yozing
+BOT_TOKEN = "YOUR_BOT_TOKEN_HERE"
 
-BOT_TOKEN = "8918984898:AAHjfVZd9V0YhLUbHmFqc_KQZJ_ycxoI1PQ"
+logging.basicConfig(level=logging.INFO)
+bot = Bot(token=BOT_TOKEN)
+dp = Dispatcher()
 
-def parse_questions_from_docx(file_path: str) -> list[dict]:
-    doc = Document(file_path)
-    full_text = "\n".join(p.text.strip() for p in doc.paragraphs if p.text.strip())
-
-    questions = []
-    blocks = re.split(r'\n(?=\d+[\.\)]\s)', full_text)
-
-    for block in blocks:
-        lines = [l.strip() for l in block.strip().splitlines() if l.strip()]
-        if len(lines) < 5:
+def parse_quiz_file(file_path):
+    """Faylni o'qib, savol, variantlar va to'g'ri javob indeksini ajratuvchi funksiya"""
+    with open(file_path, 'r', encoding='utf-8') as f:
+        text = f.read()
+    
+    # Savollarni '===' orqali ajratamiz
+    raw_questions = [q.strip() for q in text.split('===') if q.strip()]
+    parsed_questions = []
+    
+    for raw_q in raw_questions:
+        lines = [line.strip() for line in raw_q.split('\n') if line.strip()]
+        if len(lines) < 2:
             continue
-
-        q_match = re.match(r'^\d+[\.\)]\s*(.*)', lines[0])
-        if not q_match:
-            continue
-        question_text = q_match.group(1)
-
-        options = {}
-        correct = None
-
-        for line in lines[1:]:
-            opt = re.match(r'^([A-Da-d])[\.\)]\s*(.*)', line)
-            if opt:
-                options[opt.group(1).upper()] = opt.group(2)
-                continue
-
-            ans = re.match(r'^(?:Javob|To\'g\'ri\s*javob)\s*[:=]\s*([A-Da-d])', line, re.IGNORECASE)
-            if ans:
-                correct = ans.group(1).upper()
-
-        if question_text and len(options) == 4 and correct:
-            questions.append({
+        
+        question_text = lines[0] # Birinchi qator - savol matni
+        options = lines[1:]      # Qolgan qatorlar - variantlar
+        
+        correct_index = 0
+        cleaned_options = []
+        
+        for index, option in enumerate(options):
+            # Agar variant `*` bilan boshlansa, bu to'g'ri javob
+            if option.startswith('*'):
+                correct_index = index
+                # Yulduzchani olib tashlaymiz (foydalanuvchi ko'rmasligi uchun)
+                cleaned_options.append(option.replace('*', '', 1))
+            else:
+                cleaned_options.append(option)
+                
+        # Telegram bitta testda ko'pi bilan 10 ta variant qabul qiladi, odatda 4 ta bo'ladi
+        if cleaned_options:
+            parsed_questions.append({
                 "question": question_text,
-                "options": options,
-                "correct": correct
+                "options": cleaned_options,
+                "correct_id": correct_index
             })
+            
+    return parsed_questions
 
-    return questions
-
-
-def split_questions(questions: list, parts: int = 5) -> list[list]:
-    n = len(questions)
-    size = n // parts
-    remainder = n % parts
-    result = []
-    start = 0
-    for i in range(parts):
-        end = start + size + (1 if i < remainder else 0)
-        result.append(questions[start:end])
-        start = end
-    return result
-
-
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "👋 Salom! Men test botiman.\n\n"
-        "📄 Menga Word (.docx) fayl yuboring.\n"
-        "Fayl ichida A/B/C/D variantli savollar bo'lishi kerak.\n\n"
-        "Bot ularni 5 qismga bo'lib yuboradi."
+@dp.message(CommandStart())
+async def start_cmd(message: types.Message):
+    await message.answer(
+        "👋 Assalomu alaykum!\n\n"
+        "Menga ichida to'g'ri javoblari `*` bilan belgilangan `.txt` faylini tashlang. "
+        "Men sizga savollarni **Telegram Quiz (so'rovnoma)** shaklida ketma-ket chiqarib beraman.\n\n"
+        "📝 **Fayl formati xuddi shunday bo'lsin:**\n"
+        "O'zbekiston poytaxti qaysi shahar?\n"
+        "*A) Toshkent\n"
+        "B) Samarqand\n"
+        "C) Buxoro\n"
+        "D) Xiva\n"
+        "===\n"
+        "2+2 nechaga teng?\n"
+        "A) 3\n"
+        "*B) 4\n"
+        "C) 5\n"
+        "D) 6"
     )
 
-
-async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    doc = update.message.document
-
-    if not doc.file_name.endswith(".docx"):
-        await update.message.reply_text("❌ Faqat .docx fayl yuboring!")
+@dp.message(F.document)
+async def handle_document(message: types.Message):
+    if not message.document.file_name.endswith('.txt'):
+        await message.answer("❌ Iltimos, faqat `.txt` formatidagi fayl yuboring.")
         return
 
-    await update.message.reply_text("⏳ Fayl o'qilmoqda...")
-
-    file = await doc.get_file()
-    file_path = f"/tmp/{doc.file_name}"
-    await file.download_to_drive(file_path)
-
+    status_message = await message.answer("⏳ Fayl o'qilmoqda...")
+    
+    file_id = message.document.file_id
+    file = await bot.get_file(file_id)
+    
+    input_filename = f"quiz_{message.from_user.id}.txt"
+    await bot.download_file(file.file_path, input_filename)
+    
     try:
-        questions = parse_questions_from_docx(file_path)
-    except Exception as e:
-        logger.error(f"Parse error: {e}")
-        await update.message.reply_text("❌ Faylni o'qishda xato. Format to'g'riligini tekshiring.")
-        return
-
-    if not questions:
-        await update.message.reply_text(
-            "⚠️ Savollar topilmadi.\n\n"
-            "Format shunday bo'lishi kerak:\n"
-            "1. Savol matni\n"
-            "A) variant\nB) variant\nC) variant\nD) variant\n"
-            "Javob: A"
-        )
-        return
-
-    parts = split_questions(questions, 5)
-    context.user_data["parts"] = parts
-    context.user_data["total"] = len(questions)
-
-    keyboard = []
-    for i, part in enumerate(parts):
-        keyboard.append([
-            InlineKeyboardButton(
-                f"📝 {i+1}-qism ({len(part)} ta savol)",
-                callback_data=f"part_{i}"
+        # Faylni parslash
+        questions = parse_quiz_file(input_filename)
+        
+        if not questions:
+            await status_message.edit_text("❌ Fayl formatida xatolik yoki savollar topilmadi.")
+            os.remove(input_filename)
+            return
+            
+        total_questions = len(questions)
+        # Savollar sonini 30 taga cheklaymiz (agar ko'p bo'lsa ham dastlabki 30 tasini oladi)
+        # Agar hammasini chiqarmoqchi bo'lsangiz `[:30]` qismini olib tashlang
+        quiz_set = questions[:30] 
+        
+        await status_message.edit_text(f"✅ Jami {total_questions} ta savoldan dastlabki 30 tasi uchun Quiz boshlanmoqda...\n"
+                                       f"Spam bo'lmasligi uchun savollar 2 soniya oraliq bilan tashlanadi.")
+        
+        # Ketma-ket testlarni yuborish
+        for q_num, q in enumerate(quiz_set, start=1):
+            await bot.send_poll(
+                chat_id=message.chat.id,
+                question=f"{q_num}. {q['question']}",
+                options=q['options'],
+                type="quiz",                  # Telegram'ning to'g'ri/noto'g'ri ko'rsatadigan rejimi
+                correct_option_id=q['correct_id'],
+                is_anonymous=False            # Kim qanday javob berganini ko'rish uchun (ixtiyoriy)
             )
-        ])
-    keyboard.append([InlineKeyboardButton("📦 Barcha qismlarni yuborish", callback_data="all_parts")])
+            # Telegram bloklab qo'ymasligi uchun ozgina pauza (anti-flood)
+            await asyncio.sleep(2)
+            
+        await message.answer("🎉 30 talik test yakunlandi!")
 
-    await update.message.reply_text(
-        f"✅ Jami {len(questions)} ta savol topildi!\n"
-        f"5 qismga bo'lindi. Qaysi qismni yuboray?",
-        reply_markup=InlineKeyboardMarkup(keyboard)
-    )
+    except Exception as e:
+        logging.error(f"Xatolik: {e}")
+        await message.answer("❌ Testlarni shakllantirishda xatolik yuz berdi.")
+    
+    finally:
+        if os.path.exists(input_filename):
+            os.remove(input_filename)
 
+async def main():
+    await dp.start_polling(bot)
 
-def format_part(questions: list[dict], part_num: int, total_start: int) -> str:
-    lines = [f"📝 *{part_num}-qism* ({len(questions)} ta savol)\n{'─'*30}\n"]
-    for i, q in enumerate(questions, 1):
-        num = total_start + i
-        lines.append(f"*{num}. {q['question']}*")
-        for letter, text in q["options"].items():
-            mark = "✅" if letter == q["correct"] else "  "
-            lines.append(f"{mark} {letter}) {text}")
-        lines.append("")
-    return "\n".join(lines)
-
-
-async def send_part(update: Update, context: ContextTypes.DEFAULT_TYPE, part_index: int):
-    parts = context.user_data.get("parts", [])
-    if part_index >= len(parts):
-        await update.callback_query.message.reply_text("❌ Bu qism mavjud emas.")
-        return
-
-    questions = parts[part_index]
-    total_start = sum(len(parts[i]) for i in range(part_index))
-    text = format_part(questions, part_index + 1, total_start)
-
-    chunks = [text[i:i+4000] for i in range(0, len(text), 4000)]
-    for chunk in chunks:
-        await update.callback_query.message.reply_text(chunk, parse_mode="Markdown")
-
-
-async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-
-    data = query.data
-
-    if data.startswith("part_"):
-        part_index = int(data.split("_")[1])
-        await send_part(update, context, part_index)
-
-    elif data == "all_parts":
-        parts = context.user_data.get("parts", [])
-        await query.message.reply_text("📤 Barcha qismlar yuborilmoqda...")
-        for i in range(len(parts)):
-            await send_part(update, context, i)
-
-
-def main():
-    app = Application.builder().token(BOT_TOKEN).build()
-
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(MessageHandler(filters.Document.ALL, handle_document))
-    app.add_handler(CallbackQueryHandler(button_callback))
-
-    logger.info("Bot ishga tushdi...")
-    app.run_polling()
-
-
-if __name__ == "__main__":
-    main()
+if __name__ == '__main__':
+    asyncio.run(main())
