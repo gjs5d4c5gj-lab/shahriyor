@@ -6,7 +6,8 @@ from aiogram.types import Message
 import pypdf
 
 # 1. Botni sozlash (Tokenni kompyuter/server muhitidan oladi)
-TOKEN = " 8918984898:AAGftTNoYbl9mrVKjms8uegZsDfePDGbFzc "
+TOKEN = "8918984898:AAGftTNoYbl9mrVKjms8uegZsDfePDGbFzc"
+"
 
 if not TOKEN:
     raise ValueError("❌ XATOLIK: BOT_TOKEN topilmadi! Iltimos, ekotizim o'zgaruvchisini (Environment Variable) sozlang.")
