@@ -1,130 +1,112 @@
 import os
-import logging
 import asyncio
-from aiogram import Bot, Dispatcher, types, F
-from aiogram.filters import CommandStart
+import logging
+import docx
+import io
+from aiogram import Bot, Dispatcher, types
+from aiogram.filters import Command
 
-# Bot tokeningizni yozing
-BOT_TOKEN = BOT_TOKEN = os.getenv("BOT_TOKEN")
-
+# Server maxfiy qutisidan (Variables) tokenni oladi
+BOT_TOKEN = os.getenv("BOT_TOKEN")
 
 logging.basicConfig(level=logging.INFO)
+
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
-def parse_quiz_file(file_path):
-    """Faylni o'qib, savol, variantlar va to'g'ri javob indeksini ajratuvchi funksiya"""
-    with open(file_path, 'r', encoding='utf-8') as f:
-        text = f.read()
-    
-    # Savollarni '===' orqali ajratamiz
-    raw_questions = [q.strip() for q in text.split('===') if q.strip()]
-    parsed_questions = []
-    
-    for raw_q in raw_questions:
-        lines = [line.strip() for line in raw_q.split('\n') if line.strip()]
-        if len(lines) < 2:
-            continue
-        
-        question_text = lines[0] # Birinchi qator - savol matni
-        options = lines[1:]      # Qolgan qatorlar - variantlar
-        
-        correct_index = 0
-        cleaned_options = []
-        
-        for index, option in enumerate(options):
-            # Agar variant `*` bilan boshlansa, bu to'g'ri javob
-            if option.startswith('*'):
-                correct_index = index
-                # Yulduzchani olib tashlaymiz (foydalanuvchi ko'rmasligi uchun)
-                cleaned_options.append(option.replace('*', '', 1))
-            else:
-                cleaned_options.append(option)
-                
-        # Telegram bitta testda ko'pi bilan 10 ta variant qabul qiladi, odatda 4 ta bo'ladi
-        if cleaned_options:
-            parsed_questions.append({
-                "question": question_text,
-                "options": cleaned_options,
-                "correct_id": correct_index
-            })
-            
-    return parsed_questions
-
-@dp.message(CommandStart())
-async def start_cmd(message: types.Message):
-    await message.answer(
-        "👋 Assalomu alaykum!\n\n"
-        "Menga ichida to'g'ri javoblari `*` bilan belgilangan `.txt` faylini tashlang. "
-        "Men sizga savollarni **Telegram Quiz (so'rovnoma)** shaklida ketma-ket chiqarib beraman.\n\n"
-        "📝 **Fayl formati xuddi shunday bo'lsin:**\n"
-        "O'zbekiston poytaxti qaysi shahar?\n"
-        "*A) Toshkent\n"
-        "B) Samarqand\n"
-        "C) Buxoro\n"
-        "D) Xiva\n"
-        "===\n"
-        "2+2 nechaga teng?\n"
-        "A) 3\n"
-        "*B) 4\n"
-        "C) 5\n"
-        "D) 6"
-    )
-
-@dp.message(F.document)
-async def handle_document(message: types.Message):
-    if not message.document.file_name.endswith('.txt'):
-        await message.answer("❌ Iltimos, faqat `.txt` formatidagi fayl yuboring.")
-        return
-
-    status_message = await message.answer("⏳ Fayl o'qilmoqda...")
-    
-    file_id = message.document.file_id
-    file = await bot.get_file(file_id)
-    
-    input_filename = f"quiz_{message.from_user.id}.txt"
-    await bot.download_file(file.file_path, input_filename)
-    
+# Savollarni quiz formatiga o'tkazuvchi asosiy funksiya
+async def process_quiz_text(message: types.Message, text: str):
     try:
-        # Faylni parslash
-        questions = parse_quiz_file(input_filename)
-        
-        if not questions:
-            await status_message.edit_text("❌ Fayl formatida xatolik yoki savollar topilmadi.")
-            os.remove(input_filename)
+        # Savollarni '===' belgisi orqali ajratamiz
+        savollar = text.strip().split("===")
+        quiz_set = []
+
+        for s in savollar:
+            lines = [line.strip() for line in s.strip().split("\n") if line.strip()]
+            if len(lines) < 2:
+                continue
+
+            question_text = lines[0]
+            options = []
+            correct_option_id = 0
+
+            for idx, line in enumerate(lines[1:]):
+                if line.startswith("*"):
+                    correct_option_id = idx
+                    options.append(line.replace("*", "").strip())
+                else:
+                    options.append(line)
+
+            if options:
+                quiz_set.append({
+                    'question': question_text,
+                    'options': options,
+                    'correct_option_id': correct_option_id
+                })
+
+        if not quiz_set:
+            await message.answer("❌ Fayl ichida testlar topilmadi yoki formati noto'g'ri.")
             return
-            
-        total_questions = len(questions)
-        # Savollar sonini 30 taga cheklaymiz (agar ko'p bo'lsa ham dastlabki 30 tasini oladi)
-        # Agar hammasini chiqarmoqchi bo'lsangiz `[:30]` qismini olib tashlang
-        quiz_set = questions[:30] 
-        
-        await status_message.edit_text(f"✅ Jami {total_questions} ta savoldan dastlabki 30 tasi uchun Quiz boshlanmoqda...\n"
-                                       f"Spam bo'lmasligi uchun savollar 2 soniya oraliq bilan tashlanadi.")
-        
-        # Ketma-ket testlarni yuborish
-        for q_num, q in enumerate(quiz_set, start=1):
+
+        # Testlarni Telegram Quiz formatida ketma-ket yuborish
+        for q_num, q in enumerate(quiz_set, 1):
             await bot.send_poll(
                 chat_id=message.chat.id,
                 question=f"{q_num}. {q['question']}",
                 options=q['options'],
-                type="quiz",                  # Telegram'ning to'g'ri/noto'g'ri ko'rsatadigan rejimi
-                correct_option_id=q['correct_id'],
-                is_anonymous=False            # Kim qanday javob berganini ko'rish uchun (ixtiyoriy)
+                type="quiz",
+                correct_option_id=q['correct_option_id'],
+                is_anonymous=False
             )
-            # Telegram bloklab qo'ymasligi uchun ozgina pauza (anti-flood)
+            # Telegram bloklab qo'ymasligi uchun 2 soniya kutadi
             await asyncio.sleep(2)
-            
-        await message.answer("🎉 30 talik test yakunlandi!")
+
+        await message.answer("🎉 Hamma testlar yuborildi! Omad tilayman!")
 
     except Exception as e:
         logging.error(f"Xatolik: {e}")
-        await message.answer("❌ Testlarni shakllantirishda xatolik yuz berdi.")
-    
-    finally:
-        if os.path.exists(input_filename):
-            os.remove(input_filename)
+        await message.answer("❌ Testlarni qayta ishlashda xatolik yuz berdi.")
 
+# /start buyrug'i kelganda
+@dp.message(Command("start"))
+async def cmd_start(message: types.Message):
+    await message.answer(
+        "👋 Assalomu alaykum!\n\nMenga ichida to'g'ri javoblari `*` bilan belgilangan `.txt` yoki `.docx` (Word) faylini tashlang. "
+        "Men sizga savollarni **Telegram Quiz (so'rovnoma)** shaklida ketma-ket chiqarib beraman."
+    )
+
+# Oddiy matn ko'rinishida test tashlanganda
+@dp.message(lambda message: message.text is not None)
+async def handle_text_message(message: types.Message):
+    await process_quiz_text(message, message.text)
+
+# Fayl (.txt yoki .docx) ko'rinishida test tashlanganda
+@dp.message(lambda message: message.document is not None)
+async def handle_document_message(message: types.Message):
+    document = message.document
+    file_id = document.file_id
+    file = await bot.get_file(file_id)
+    file_path = file.file_path
+    downloaded_file = await bot.download_file(file_path)
+    
+    # Agar Word (.docx) fayl bo'lsa
+    if document.file_name.endswith('.docx'):
+        doc = docx.Document(io.BytesIO(downloaded_file.read()))
+        full_text = []
+        for para in doc.paragraphs:
+            full_text.append(para.text)
+        text = "\n".join(full_text)
+        await process_quiz_text(message, text)
+        
+    # Agar oddiy (.txt) fayl bo'lsa
+    elif document.file_name.endswith('.txt'):
+        text = downloaded_file.read().decode('utf-8')
+        await process_quiz_text(message, text)
+        
+    else:
+        await message.answer("❌ Iltimos, testlarni faqat .txt yoki .docx formatida yuboring.")
+
+# Botni yondirish (Asosiy qism)
 async def main():
     await dp.start_polling(bot)
 
