@@ -5,7 +5,7 @@ from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import CommandStart
 
 # Bot tokeningizni yozing
-BOT_TOKEN = "YOUR_BOT_TOKEN_HERE"
+BOT_TOKEN = 8918984898:AAGftTNoYbl9mrVKjms8uegZsDfePDGbFzc
 
 logging.basicConfig(level=logging.INFO)
 bot = Bot(token=BOT_TOKEN)
