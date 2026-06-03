@@ -1,8 +1,7 @@
-
 import telebot
 from telebot import types
 
-# Bu yerga o'zingizning BotFather'dan olgan tokeningizni qo'ying
+# Bot tokeningizni shu yerga aniq yozing
 API_TOKEN = '8918984898:AAGftTNoYbl9mrVKjms8uegZsDfePDGbFzc'
 bot = telebot.TeleBot(API_TOKEN)
 
@@ -13,26 +12,35 @@ def send_welcome(message):
 @bot.message_handler(content_types=['document'])
 def handle_document(message):
     try:
+        # Fayl faqat .txt bo'lishi kerakligini tekshiramiz
+        if not message.document.file_name.endswith('.txt'):
+            bot.reply_to(message, "Iltimos, faqat .txt (matnli fayl) formatida yuboring! .pdf yoki .docx yubormang.")
+            return
+
         # Faylni yuklab olish
         file_info = bot.get_file(message.document.file_id)
         downloaded_file = bot.download_file(file_info.file_path)
         
-        # Fayl ichidagi matnni o'qish (UTF-8 formatida)
-        text = downloaded_file.decode('utf-8')
+        # 🛠 ENG MUHIM JOYI: 'utf-8-sig' orqali har qanday yashirin BOM belgilarini o'chirib o'qiymiz
+        try:
+            text = downloaded_file.decode('utf-8-sig')
+        except UnicodeDecodeError:
+            # Agar u ham o'xshasa, eski Windows kodirovkasida o'qiydi
+            text = downloaded_file.decode('latin-1')
         
         # Testlarni ajratib olish (savollar o'rtasida *** ajratuvchi belgi bo'lsa)
         blocks = text.strip().split('***')
         
-        if not blocks or len(blocks) == 0:
+        if not blocks or len(blocks) == 0 or blocks[0].strip() == "":
             bot.reply_to(message, "Xatolik: Fayl ichidan testlar topilmadi. Formatni tekshiring.")
             return
 
-        bot.reply_to(message, f"PDF/TXT qabul qilindi. {len(blocks)} ta test o'qilmoqda, iltimos kuting... ⏳")
+        bot.reply_to(message, f"Matnli fayl qabul qilindi. {len(blocks)} ta test tayyorlanmoqda, iltimos kuting... ⏳")
 
         for block in blocks:
             lines = [line.strip() for line in block.strip().split('\n') if line.strip()]
             if len(lines) < 2:
-                continue  # Agar savol yoki variantlar yetarli bo'lmasa, o'tkazib yuboriladi
+                continue  # Agar savol yoki variantlar kam bo'lsa o'tkazib yuboradi
 
             question = lines[0] # Birinchi qator - savol
             raw_options = lines[1:] # Qolgan qatorlar - variantlar
@@ -40,7 +48,7 @@ def handle_document(message):
             options = []
             correct_option_id = None
 
-            # Variantlarni bittalab tekshiramiz va to'g'ri indeksni aniqlaymiz
+            # Variantlarni tekshirish va to'g'ri indeksni aniqlash
             for index, option in enumerate(raw_options):
                 if option.startswith('#'):
                     correct_option_id = index # To'g'ri javob indeksini saqlaymiz (0, 1, 2 yoki 3)
@@ -58,12 +66,12 @@ def handle_document(message):
                 question=question,
                 options=options,
                 type='quiz',
-                correct_option_id=correct_option_id, # Aynan mana shu parametr javobni to'g'rilaydi!
+                correct_option_id=correct_option_id,
                 is_anonymous=False
             )
 
     except Exception as e:
-        bot.reply_to(message, f"Xatolik yuz berdi: {str(e)}")
+        bot.reply_to(message, f"Kutilmagan xatolik yuz berdi: {str(e)}")
 
 # Botni uzluksiz ishga tushirish
 print("Bot muvaffaqiyatli ishga tushdi...")
